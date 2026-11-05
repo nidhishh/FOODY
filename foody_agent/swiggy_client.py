@@ -10,14 +10,15 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .config import SWIGGY_FOOD_MCP_URL, get_valid_bearer_token
+from .config import SWIGGY_DINEOUT_MCP_URL, SWIGGY_FOOD_MCP_URL, get_valid_bearer_token
 
 
 class SwiggyMCPClient:
-    """Sync and Async client for Swiggy's Streamable HTTP MCP endpoint."""
+    """Sync and Async client for Swiggy's Streamable HTTP MCP endpoints (Food, Dineout, Instamart)."""
 
-    def __init__(self, endpoint: str = SWIGGY_FOOD_MCP_URL) -> None:
+    def __init__(self, endpoint: str = SWIGGY_FOOD_MCP_URL, server: str = "food") -> None:
         self.endpoint = endpoint
+        self.server = server
         self._req_id = 1
 
     def _next_id(self) -> int:
@@ -25,12 +26,12 @@ class SwiggyMCPClient:
         return self._req_id
 
     def _headers(self) -> Dict[str, str]:
-        token = get_valid_bearer_token("food")
+        token = get_valid_bearer_token(self.server)
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "User-Agent": "foody-google-adk/1.0",
+            "User-Agent": f"foody-google-adk-{self.server}/1.0",
         }
 
     def _parse_response(self, resp: httpx.Response, tool_name: str) -> Dict[str, Any]:
@@ -122,5 +123,6 @@ class SwiggyMCPClient:
             return self._parse_response(resp, tool_name)
 
 
-SWIGGY = SwiggyMCPClient()
+SWIGGY = SwiggyMCPClient(endpoint=SWIGGY_FOOD_MCP_URL, server="food")
+SWIGGY_DINEOUT = SwiggyMCPClient(endpoint=SWIGGY_DINEOUT_MCP_URL, server="dineout")
 

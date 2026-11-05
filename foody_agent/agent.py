@@ -10,16 +10,21 @@ from google.adk.agents import LlmAgent
 from .config import FOODY_MODEL
 from .tools import (
     add_dish_to_cart,
+    book_dineout_table,
+    check_dineout_slots,
     check_payment_and_confirm_order,
     clear_food_cart,
+    compare_order_vs_dineout,
     find_cheapest_lunch_deals,
     find_gourmet_steals,
     get_active_delivery_address,
+    get_dineout_restaurant_details,
     get_full_restaurant_menu,
     initiate_upi_checkout,
     list_saved_addresses,
     optimize_cart_coupons,
     remove_auto_filler_from_cart,
+    search_dineout_restaurants,
     search_dishes_across_restaurants,
     search_smart_restaurants,
     stage_checkout_summary,
@@ -114,20 +119,49 @@ CRITICAL SAFETY RULE:
     ],
 )
 
+dineout_agent = LlmAgent(
+    name="dineout_agent",
+    model=FOODY_MODEL,
+    description=(
+        "Specialized in dining out, restaurant table discovery, table slot availability, "
+        "Dineout Pay bill discounts (10%-50% off), reservations, and comparing eating in vs dining out."
+    ),
+    instruction="""You are FOODY's Swiggy Dineout & Table Concierge sub-agent.
+Your mission is to help users discover top restaurants to eat out at, unlock Dineout Pay discounts, check live slots, and book tables.
+
+Key Guidelines:
+1. For dining out, searching places to visit, cafes, buffets, rooftops, or table booking, call `search_dineout_restaurants`.
+   - Highlight active Dineout Pay offers (e.g. 'Flat 15% - 50% off on Total Bill') and Cost for Two.
+2. When the user asks for restaurant specifics (address, timings, full discounts, bank offers), call `get_dineout_restaurant_details`.
+3. When the user asks to book a table or check availability for lunch/dinner, call `check_dineout_slots`.
+4. When the user wants to reserve a slot, call `book_dineout_table`.
+5. When the user is debating between food delivery and dining out, call `compare_order_vs_dineout`.
+""",
+    tools=[
+        search_dineout_restaurants,
+        get_dineout_restaurant_details,
+        check_dineout_slots,
+        book_dineout_table,
+        compare_order_vs_dineout,
+        get_active_delivery_address,
+    ],
+)
+
 root_agent = LlmAgent(
     name="foody_coordinator",
     model=FOODY_MODEL,
-    description="FOODY: Street-smart Swiggy Food AI Coordinator powered by Google ADK and Gemini.",
-    instruction="""You are FOODY, a street-smart Swiggy Food concierge powered by Google ADK & Gemini.
-You understand customer behavior: users don't just want the cheapest oily food—they want the highest delta between quality and price (Gourmet food for ₹200-₹260).
+    description="FOODY: Street-smart Swiggy Food & Dineout AI Coordinator powered by Google ADK and Gemini.",
+    instruction="""You are FOODY, a street-smart Swiggy Food & Dineout concierge powered by Google ADK & Gemini.
+You understand customer behavior: users don't just want the cheapest food—they want the highest delta between quality and price, whether ordering in or dining out.
 
 How to operate:
-- For high-quality / gourmet food on a budget, use `find_gourmet_steals`.
-- For curated restaurant discovery, use `search_smart_restaurants` (which strips out Ads and ranks by quality score).
-- For everyday cheap comfort meals, use `find_cheapest_lunch_deals`.
-- For cart building & coupon testing, use `add_dish_to_cart` and `optimize_cart_coupons`.
+- For high-quality / gourmet food delivery, use `find_gourmet_steals`.
+- For curated restaurant delivery discovery, use `search_smart_restaurants` (which strips out Ads and ranks by quality score).
+- For dining out, restaurant table booking, and Dineout Pay offers (10%-50% off bill), use `search_dineout_restaurants`, `get_dineout_restaurant_details`, and `check_dineout_slots`.
+- When the user asks 'should I order or go out?' or is exploring a cuisine, use `compare_order_vs_dineout` to show both delivery ETA/costs and dine-out discounts side-by-side.
+- For cart building & coupon testing on delivery, use `add_dish_to_cart` and `optimize_cart_coupons`.
 - For checkout, ALWAYS enforce the 2-step safety gate: show `stage_checkout_summary` first, and only proceed after explicit confirmation.
-- Format responses in clean, structured Markdown, always highlighting prices in ₹.
+- Format responses in clean, structured Markdown, always highlighting prices and discounts in ₹ / %.
 """,
     tools=[
         get_active_delivery_address,
@@ -148,10 +182,16 @@ How to operate:
         initiate_upi_checkout,
         check_payment_and_confirm_order,
         track_active_or_recent_orders,
+        search_dineout_restaurants,
+        get_dineout_restaurant_details,
+        check_dineout_slots,
+        book_dineout_table,
+        compare_order_vs_dineout,
     ],
     sub_agents=[
         deal_hunter_agent,
         cart_coupon_agent,
         checkout_gate_agent,
+        dineout_agent,
     ],
 )

@@ -28,6 +28,13 @@ from .deal_tools import (
     search_dishes_across_restaurants,
     search_smart_restaurants,
 )
+from .dineout_tools import (
+    book_dineout_table,
+    check_dineout_slots,
+    compare_order_vs_dineout,
+    get_dineout_restaurant_details,
+    search_dineout_restaurants,
+)
 
 __all__ = [
     "get_active_delivery_address",
@@ -48,4 +55,9 @@ __all__ = [
     "initiate_upi_checkout",
     "check_payment_and_confirm_order",
     "track_active_or_recent_orders",
+    "search_dineout_restaurants",
+    "get_dineout_restaurant_details",
+    "check_dineout_slots",
+    "book_dineout_table",
+    "compare_order_vs_dineout",
 ]

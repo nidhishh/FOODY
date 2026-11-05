@@ -33,13 +33,18 @@ from foody_agent.agent import root_agent
 from foody_agent.config import ROOT_DIR, STATE
 from foody_agent.tools import (
     add_dish_to_cart,
+    book_dineout_table,
+    check_dineout_slots,
     clear_food_cart,
+    compare_order_vs_dineout,
     find_cheapest_lunch_deals,
     find_gourmet_steals,
+    get_dineout_restaurant_details,
     initiate_upi_checkout,
     list_saved_addresses,
     optimize_cart_coupons,
     remove_auto_filler_from_cart,
+    search_dineout_restaurants,
     search_smart_restaurants,
     stage_checkout_summary,
     switch_delivery_address,
@@ -83,11 +88,14 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("🔥 Value Lunch Deals", callback_data="menu:deals"),
+                InlineKeyboardButton("🍽️ Dineout & Tables", callback_data="menu:dineout"),
+            ],
+            [
                 InlineKeyboardButton("🛒 View Cart", callback_data="menu:cart"),
+                InlineKeyboardButton("💳 Checkout Gate", callback_data="menu:checkout"),
             ],
             [
                 InlineKeyboardButton("📍 Switch Address", callback_data="menu:address"),
-                InlineKeyboardButton("💳 Checkout Gate", callback_data="menu:checkout"),
             ],
         ]
     )
@@ -209,9 +217,10 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome = (
         "🍔 *Yo! Welcome to FOODY (Google ADK + Swiggy MCP)*\n\n"
         f"📍 *Active Address:* `{STATE.active_address_label}`\n\n"
-        "Smart Food Concierge built for high-value orders:\n"
-        "• *💎 Gourmet Steals:* High-end food (Kitchen Garden, Toscano, Smoke House Deli) dropped to ₹200-₹260 via coupons.\n"
-        "• *🔍 Smart Ranking:* Strips out sponsored ads and finds authentic bestsellers.\n\n"
+        "Smart Food Concierge built for high-value orders & dining:\n"
+        "• *💎 Gourmet Steals:* High-end food dropped to ₹200-₹260 via coupons.\n"
+        "• *🍽️ Dineout & Tables:* Top restaurants with 10%-50% Dineout Pay bill discounts & instant table booking.\n"
+        "• *⚡ Order vs. Dine Out:* Compare food delivery vs eating out side-by-side!\n\n"
         "Tap a button below or tell me what you're craving:"
     )
     await update.message.reply_text(
@@ -305,6 +314,39 @@ async def deals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         buttons.append(row)
     buttons.append([InlineKeyboardButton("🛒 View Cart", callback_data="menu:cart")])
 
+    await msg.edit_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def dineout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not _is_authorized(update.effective_user.id):
+        return
+    msg = await update.message.reply_text("🍽️ Searching top Dineout restaurants & bill discounts near you...")
+    res = await asyncio.to_thread(search_dineout_restaurants, "restaurant", "", 6)
+    rests = res.get("restaurants", [])
+    if not rests:
+        await msg.edit_text("No Dineout restaurants found in this area right now. Try specifying a locality like 'Dineout in Bandra'!")
+        return
+
+    lines = [
+        f"🍽️ *Top Dineout Restaurants & Offers*",
+        f"📍 _{res.get('resolved_area', STATE.active_address_label)}_\n",
+    ]
+    buttons: List[List[InlineKeyboardButton]] = []
+    for idx, r in enumerate(rests[:5], start=1):
+        offer_str = f"\n   🏷️ *{r['active_offer']}*" if r.get("active_offer") else ""
+        lines.append(
+            f"*{idx}. {r['name']}* (⭐ {r['rating']} · {r['locality']})\n"
+            f"   🍴 {r['cuisine']} · {r['cost_for_two']}{offer_str}"
+        )
+        buttons.append([
+            InlineKeyboardButton(f"📅 Slots: {r['name'][:16]}", callback_data=f"doslot:{r['restaurant_id']}"),
+            InlineKeyboardButton("ℹ️ Offers", callback_data=f"dodet:{r['restaurant_id']}"),
+        ])
+    buttons.append([InlineKeyboardButton("🔙 Main Menu", callback_data="menu:back")])
     await msg.edit_text(
         "\n".join(lines),
         parse_mode="Markdown",
@@ -536,6 +578,100 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=_main_menu_keyboard(),
         )
 
+    elif data == "menu:dineout":
+        await query.edit_message_text("🍽️ Searching top Dineout restaurants & bill discounts near you...")
+        res = await asyncio.to_thread(search_dineout_restaurants, "restaurant", "", 6)
+        rests = res.get("restaurants", [])
+        if not rests:
+            await query.edit_message_text("No Dineout restaurants found. Try asking me for a specific cuisine or area!")
+            return
+        lines = [
+            f"🍽️ *Top Dineout Restaurants & Offers*\n📍 _{res.get('resolved_area', STATE.active_address_label)}_\n"
+        ]
+        buttons: List[List[InlineKeyboardButton]] = []
+        for idx, r in enumerate(rests[:5], start=1):
+            offer_str = f"\n   🏷️ *{r['active_offer']}*" if r.get("active_offer") else ""
+            lines.append(
+                f"*{idx}. {r['name']}* (⭐ {r['rating']} · {r['locality']})\n"
+                f"   🍴 {r['cuisine']} · {r['cost_for_two']}{offer_str}"
+            )
+            buttons.append([
+                InlineKeyboardButton(f"📅 Slots: {r['name'][:16]}", callback_data=f"doslot:{r['restaurant_id']}"),
+                InlineKeyboardButton("ℹ️ Offers", callback_data=f"dodet:{r['restaurant_id']}"),
+            ])
+        buttons.append([InlineKeyboardButton("🔙 Main Menu", callback_data="menu:back")])
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    elif data.startswith("doslot:"):
+        rid = data.split(":")[1]
+        await query.edit_message_text("📅 Checking live table slots on Swiggy Dineout...")
+        slots_res = await asyncio.to_thread(check_dineout_slots, rid)
+        summaries = slots_res.get("available_date_summaries", [])
+        deals = slots_res.get("booking_deals", [])
+        text_lines = [
+            f"📅 *Available Table Slots (Next 7 Days)*",
+            f"🏪 Restaurant ID: `{rid}`\n",
+        ]
+        if summaries:
+            text_lines.append("*Slot Schedules:*")
+            for s in summaries[:4]:
+                text_lines.append(f"• {s}")
+        if deals:
+            text_lines.append("\n*Promotional Deals:*")
+            for d in deals[:3]:
+                text_lines.append(f"• {d}")
+        if not summaries and not deals:
+            text_lines.append("No open online slots found for this week. Walk-ins may still be available.")
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("ℹ️ View Restaurant Offers", callback_data=f"dodet:{rid}")],
+            [InlineKeyboardButton("🍽️ Back to Dineout", callback_data="menu:dineout")],
+        ])
+        await query.edit_message_text(
+            "\n".join(text_lines),
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+
+    elif data.startswith("dodet:"):
+        rid = data.split(":")[1]
+        await query.edit_message_text("ℹ️ Fetching full restaurant details & bill discounts...")
+        det = await asyncio.to_thread(get_dineout_restaurant_details, rid)
+        text_lines = [
+            f"🏪 *{det.get('name', 'Restaurant Details')}*",
+            f"🍴 *Cuisines:* {det.get('cuisines', 'N/A')}",
+            f"⭐ *Rating:* {det.get('rating', 'N/A')}",
+            f"💰 *Cost for Two:* {det.get('cost_for_two', 'N/A')}",
+            f"📍 *Address:* {det.get('address', 'N/A')}",
+            f"⏰ *Timings:* {det.get('timings', 'N/A')}",
+            "",
+            f"🏷️ *Dineout Pay Offers:*",
+            f"   *{det.get('dineout_pay_offers', 'None')}*",
+        ]
+        if det.get("bank_offers"):
+            text_lines.extend(["", "💳 *Bank Discounts & Cashback:*", f"   {det.get('bank_offers')[:300]}"])
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📅 Check Live Slots", callback_data=f"doslot:{rid}")],
+            [InlineKeyboardButton("🍽️ Back to Dineout", callback_data="menu:dineout")],
+        ])
+        await query.edit_message_text(
+            "\n".join(text_lines),
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+
+    elif data == "menu:back":
+        await query.edit_message_text(
+            "🍔 *FOODY Main Menu:* Tap an option below or chat with me:",
+            parse_mode="Markdown",
+            reply_markup=_main_menu_keyboard(),
+        )
+
 
 async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message or not update.message.text:
@@ -584,6 +720,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("gourmet", gourmet_cmd))
     app.add_handler(CommandHandler("deals", deals_cmd))
+    app.add_handler(CommandHandler("dineout", dineout_cmd))
     app.add_handler(CommandHandler("cart", cart_cmd))
     app.add_handler(CommandHandler("address", address_cmd))
     app.add_handler(CallbackQueryHandler(button_callback))

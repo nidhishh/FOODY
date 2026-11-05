@@ -26,6 +26,8 @@ if os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
 
 FOODY_MODEL = os.getenv("FOODY_MODEL", "gemini-2.5-flash")
 SWIGGY_FOOD_MCP_URL = "https://mcp.swiggy.com/food"
+SWIGGY_DINEOUT_MCP_URL = "https://mcp.swiggy.com/dineout"
+SWIGGY_INSTAMART_MCP_URL = "https://mcp.swiggy.com/im"
 
 DEFAULT_ADDRESS_ID = os.getenv(
     "DEFAULT_ADDRESS_ID",
@@ -35,6 +37,52 @@ DEFAULT_ADDRESS_LABEL = os.getenv(
     "DEFAULT_ADDRESS_LABEL",
     "Office — Nariman Point, Mumbai",
 )
+
+# Known coordinate mappings for saved addresses and common Mumbai localities
+LOCALITY_COORDINATES: Dict[str, tuple[float, float]] = {
+    "nariman point": (18.9256, 72.8242),
+    "maker chamber": (18.9256, 72.8242),
+    "fort": (18.9322, 72.8335),
+    "colaba": (18.9067, 72.8147),
+    "churchgate": (18.9322, 72.8264),
+    "marine lines": (18.9438, 72.8234),
+    "worli": (18.9986, 72.8174),
+    "tata towers": (18.9986, 72.8174),
+    "prabhadevi": (19.0166, 72.8295),
+    "lower parel": (18.9953, 72.8244),
+    "kamala mills": (18.9953, 72.8244),
+    "dadar": (19.0178, 72.8478),
+    "bandra": (19.0596, 72.8295),
+    "bandra west": (19.0596, 72.8295),
+    "bkc": (19.0657, 72.8687),
+    "bandra kurla complex": (19.0657, 72.8687),
+    "juhu": (19.1075, 72.8263),
+    "andheri": (19.1136, 72.8697),
+    "powai": (19.1176, 72.9060),
+    "mumbai": (18.9256, 72.8242),
+}
+
+
+def resolve_coordinates(area_or_locality: Optional[str] = None) -> tuple[float, float]:
+    """
+    Resolves (latitude, longitude) for Dineout searches.
+    1. Checks if area_or_locality matches a known locality.
+    2. Else checks active delivery address label keywords.
+    3. Defaults to South Mumbai (Nariman Point: 18.9256, 72.8242).
+    """
+    if area_or_locality and area_or_locality.strip():
+        clean = area_or_locality.strip().lower()
+        for loc_name, coords in LOCALITY_COORDINATES.items():
+            if loc_name in clean:
+                return coords
+
+    # Check active address label
+    label_low = STATE.active_address_label.lower()
+    for loc_name, coords in LOCALITY_COORDINATES.items():
+        if loc_name in label_low:
+            return coords
+
+    return (18.9256, 72.8242)
 
 STATE_FILE = ROOT_DIR / "state_store.json"
 
