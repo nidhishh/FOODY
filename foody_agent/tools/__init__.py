@@ -11,6 +11,7 @@ from .cart_tools import (
     add_dish_to_cart,
     clear_food_cart,
     optimize_cart_coupons,
+    remove_auto_filler_from_cart,
     view_current_cart,
 )
 from .checkout_tools import (
@@ -39,6 +40,7 @@ __all__ = [
     "find_cheapest_lunch_deals",
     "view_current_cart",
     "add_dish_to_cart",
+    "remove_auto_filler_from_cart",
     "clear_food_cart",
     "optimize_cart_coupons",
     "stage_checkout_summary",

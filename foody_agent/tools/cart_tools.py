@@ -1,16 +1,81 @@
 """
 Cart & Coupon Optimizer tools for the FOODY Google ADK agent.
+Includes the Negative-Cost MOV Filler Arbitrage Engine:
+Automatically detects when adding a savoury side/bread (roti, naan, kulcha, papad, raita, dip)
+bridges a Minimum Order Value (MOV) coupon threshold and reduces the net payable bill.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import STATE
 from ..swiggy_client import SWIGGY
 
+SAVOURY_TIER_1_KEYWORDS = [
+    "roti",
+    "chapati",
+    "phulka",
+    "naan",
+    "kulcha",
+    "paratha",
+    "parantha",
+    "papad",
+    "raita",
+    "dip",
+    "hummus",
+    "garlic bread",
+    "pita",
+    "curd",
+    "dahi",
+    "salad",
+    "salsa",
+    "tzatziki",
+    "mayo",
+    "peri peri",
+    "pav",
+    "bhakri",
+    "thepla",
+]
 
-def _extract_cart_summary(raw_res: Dict[str, Any]) -> Dict[str, Any]:
+SAVOURY_TIER_2_KEYWORDS = [
+    "chaas",
+    "buttermilk",
+    "soup",
+    "fries",
+    "wedge",
+    "samosa",
+    "roll",
+    "starter",
+    "lime",
+    "nimbu",
+    "solkadhi",
+]
+
+EXCLUDED_JUNK_KEYWORDS = [
+    "cutlery",
+    "carry bag",
+    "plastic",
+    "napkin",
+    "tissue",
+    "water bottle",
+    "packaged drinking water",
+    "mineral water",
+    "kinley",
+    "bisleri",
+    "aquafina",
+]
+
+DEFICIT_REGEX = re.compile(r"Add\s+₹\s*(\d+(?:\.\d+)?)\s+more", re.IGNORECASE)
+SAVE_REGEX = re.compile(r"Save\s+₹\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def _extract_cart_summary(
+    raw_res: Dict[str, Any],
+    filler_arbitrage: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     if not raw_res.get("ok"):
         return raw_res
 
@@ -29,6 +94,14 @@ def _extract_cart_summary(raw_res: Dict[str, Any]) -> Dict[str, Any]:
     offers = inner.get("offers", {})
     rest = inner.get("restaurant", {})
 
+    # Preserve existing filler_arbitrage metadata if it still applies to the items in cart
+    if filler_arbitrage is None and isinstance(STATE.last_cart_snapshot, dict):
+        prev_arb = STATE.last_cart_snapshot.get("filler_arbitrage")
+        if isinstance(prev_arb, dict):
+            filler_id = str(prev_arb.get("filler_menu_item_id", ""))
+            if any(str(i.get("menu_item_id", "")) == filler_id for i in items):
+                filler_arbitrage = prev_arb
+
     formatted_items = [
         {
             "menu_item_id": str(i.get("menu_item_id", "")),
@@ -36,14 +109,19 @@ def _extract_cart_summary(raw_res: Dict[str, Any]) -> Dict[str, Any]:
             "quantity": i.get("quantity", 1),
             "subtotal_inr": i.get("subtotal"),
             "final_price_inr": i.get("final_price"),
+            "is_auto_filler": bool(
+                filler_arbitrage
+                and str(i.get("menu_item_id", "")) == str(filler_arbitrage.get("filler_menu_item_id", ""))
+            ),
         }
         for i in items
     ]
 
-    summary = {
+    summary: Dict[str, Any] = {
         "ok": True,
         "is_empty": False,
         "cart_id": str(inner.get("cart_id", "")),
+        "restaurant_id": str(rest.get("id") or STATE.last_cart_snapshot.get("restaurant_id") or ""),
         "restaurant_name": rest.get("name"),
         "delivery_subtitle": rest.get("deliverySubtitle"),
         "active_address": STATE.active_address_label,
@@ -59,6 +137,9 @@ def _extract_cart_summary(raw_res: Dict[str, Any]) -> Dict[str, Any]:
             "to_pay_inr": pricing.get("to_pay"),
         },
     }
+    if filler_arbitrage:
+        summary["filler_arbitrage"] = filler_arbitrage
+
     STATE.last_cart_snapshot = summary
     return summary
 
@@ -66,7 +147,8 @@ def _extract_cart_summary(raw_res: Dict[str, Any]) -> Dict[str, Any]:
 def view_current_cart() -> Dict[str, Any]:
     """
     Fetches the user's current Swiggy Food cart and returns the itemized list,
-    active discounts/coupons, free delivery savings, taxes, and final amount to pay.
+    active discounts/coupons, free delivery savings, taxes, filler arbitrage status,
+    and final amount to pay.
     """
     res = SWIGGY.call_tool(
         "get_food_cart",
@@ -91,8 +173,8 @@ def add_dish_to_cart(
         quantity: Quantity of the item to set in cart (default 1).
         restaurant_name: Optional human-readable restaurant name.
     """
-    # Lock checkout gate whenever cart changes so user must confirm the new total
     STATE.checkout_unlocked = False
+    STATE.last_cart_snapshot = {"restaurant_id": str(restaurant_id)}
 
     args: Dict[str, Any] = {
         "addressId": STATE.active_address_id,
@@ -108,7 +190,46 @@ def add_dish_to_cart(
         args["restaurantName"] = restaurant_name
 
     res = SWIGGY.call_tool("update_food_cart", args)
-    return _extract_cart_summary(res)
+    summary = _extract_cart_summary(res, filler_arbitrage=None)
+    summary["restaurant_id"] = str(restaurant_id)
+    STATE.last_cart_snapshot = summary
+    return summary
+
+
+def remove_auto_filler_from_cart() -> Dict[str, Any]:
+    """
+    Removes the auto-added MOV filler item from the current cart and re-applies the best
+    solo-item coupon if the user prefers ordering only their main dish.
+    """
+    STATE.checkout_unlocked = False
+    snap = STATE.last_cart_snapshot if isinstance(STATE.last_cart_snapshot, dict) else {}
+    arb = snap.get("filler_arbitrage") or {}
+    filler_id = str(arb.get("filler_menu_item_id", ""))
+    rest_id = str(snap.get("restaurant_id") or "")
+
+    current = view_current_cart()
+    if current.get("is_empty"):
+        return current
+
+    remaining_items = [
+        {"menu_item_id": str(i["menu_item_id"]), "quantity": int(i.get("quantity", 1))}
+        for i in current.get("items", [])
+        if str(i.get("menu_item_id")) != filler_id
+    ]
+    if not remaining_items or not rest_id:
+        return current
+
+    STATE.last_cart_snapshot = {"restaurant_id": rest_id}
+    SWIGGY.call_tool(
+        "update_food_cart",
+        {
+            "addressId": STATE.active_address_id,
+            "restaurantId": rest_id,
+            "cartItems": remaining_items,
+        },
+    )
+    # Re-apply best solo coupon without filler arbitrage
+    return optimize_cart_coupons(rest_id, allow_filler_arbitrage=False)
 
 
 def clear_food_cart() -> Dict[str, Any]:
@@ -128,22 +249,190 @@ def clear_food_cart() -> Dict[str, Any]:
     }
 
 
+def _parse_coupons_and_deficits(
+    coupons_res: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Extracts (applicable_coupons, locked_mov_coupons) from `fetch_food_coupons`.
+    Note: Swiggy's `fetch_food_coupons` stores the coupon UUID in `id` and promo name in `title`.
+    """
+    applicable: List[Dict[str, Any]] = []
+    locked_mov: List[Dict[str, Any]] = []
+
+    data = coupons_res.get("data")
+    if isinstance(data, dict):
+        for sec in data.get("coupon_sections", []):
+            if not isinstance(sec, dict):
+                continue
+            for c in sec.get("coupons", []):
+                if not isinstance(c, dict):
+                    continue
+                code_id = str(c.get("id") or c.get("coupon_code") or c.get("code") or "")
+                title = str(c.get("title") or code_id)
+                subtitle = str(c.get("subtitle") or "")
+                is_app = bool(c.get("applicable", False))
+
+                save_m = SAVE_REGEX.search(subtitle)
+                est_save = float(save_m.group(1)) if save_m else 0.0
+
+                def_m = DEFICIT_REGEX.search(subtitle)
+                deficit = float(def_m.group(1)) if def_m else 0.0
+
+                entry = {
+                    "code": code_id,
+                    "title": title,
+                    "subtitle": subtitle,
+                    "estimated_save_inr": est_save,
+                    "deficit_inr": deficit,
+                }
+                if is_app and code_id:
+                    applicable.append(entry)
+                elif deficit > 0 and code_id:
+                    locked_mov.append(entry)
+
+    # Sort applicable by highest estimated save first
+    applicable.sort(key=lambda x: -x["estimated_save_inr"])
+    # Sort locked MOV coupons by smallest deficit first
+    locked_mov.sort(key=lambda x: x["deficit_inr"])
+    return applicable, locked_mov
+
+
+def _find_best_savoury_filler(
+    restaurant_id: str,
+    deficit_inr: float,
+    existing_item_ids: set[str],
+    max_filler_price_inr: float = 110.0,
+) -> Optional[Dict[str, Any]]:
+    """
+    Scans up to 3 pages of the restaurant's live menu in parallel to find the ideal
+    savoury side or bread (roti, naan, kulcha, papad, raita, dip) that bridges `deficit_inr`.
+    """
+    def _fetch_page(page_num: int) -> Dict[str, Any]:
+        return SWIGGY.call_tool(
+            "get_restaurant_menu",
+            {
+                "addressId": STATE.active_address_id,
+                "restaurantId": str(restaurant_id),
+                "page": page_num,
+            },
+        )
+
+    first_page = _fetch_page(1)
+    if not first_page.get("ok") or not isinstance(first_page.get("data"), dict):
+        return None
+
+    first_data = first_page["data"]
+    all_categories: List[Dict[str, Any]] = list(first_data.get("categories", []))
+
+    if first_data.get("hasMore"):
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futs = [pool.submit(_fetch_page, p) for p in (2, 3, 4)]
+            for fut in futs:
+                try:
+                    r_page = fut.result()
+                    if r_page.get("ok") and isinstance(r_page.get("data"), dict):
+                        all_categories.extend(r_page["data"].get("categories", []))
+                except Exception:
+                    pass
+
+    candidates: List[Dict[str, Any]] = []
+    seen_ids = set(existing_item_ids)
+
+    def _collect_items_from_cat(cat_obj: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+        pairs: List[Tuple[str, Dict[str, Any]]] = []
+        c_title = str(cat_obj.get("title", "Sides"))
+        for it in cat_obj.get("items", []):
+            pairs.append((c_title, it))
+        for sub in cat_obj.get("subcategories", []):
+            sub_title = f"{c_title} - {sub.get('title', '')}"
+            for it in sub.get("items", []):
+                pairs.append((sub_title, it))
+        return pairs
+
+    for cat in all_categories:
+        for cat_title_display, it in _collect_items_from_cat(cat):
+            cat_title = cat_title_display.lower()
+            mid = str(it.get("id", ""))
+            if not mid or mid in seen_ids:
+                continue
+            if it.get("inStock", 1) == 0:
+                continue
+            has_variants = bool(it.get("hasVariants", False))
+
+            price = float(it.get("price") or 9999.0)
+            if price < deficit_inr or price > max(deficit_inr + 65.0, max_filler_price_inr):
+                continue
+
+            name_raw = str(it.get("name", ""))
+            name_low = name_raw.lower()
+
+            if any(junk in name_low for junk in EXCLUDED_JUNK_KEYWORDS):
+                continue
+
+            # Score savoury priority
+            tier = 3
+            if any(k in name_low or k in cat_title for k in SAVOURY_TIER_1_KEYWORDS):
+                tier = 1
+            elif any(k in name_low or k in cat_title for k in SAVOURY_TIER_2_KEYWORDS):
+                tier = 2
+
+            seen_ids.add(mid)
+            candidates.append(
+                {
+                    "menu_item_id": mid,
+                    "name": name_raw,
+                    "price_inr": int(price) if price.is_integer() else price,
+                    "is_veg": bool(it.get("isVeg", True)),
+                    "category": cat_title_display,
+                    "savoury_tier": tier,
+                    "has_variants": has_variants,
+                    "overshoot_inr": round(price - deficit_inr, 2),
+                }
+            )
+
+    if not candidates:
+        return None
+
+    # Sort by: 1) No complex variants first, 2) Savoury Tier (1=Breads/Dips/Papad/Raita), 3) Smallest price overshoot above deficit
+    candidates.sort(
+        key=lambda x: (
+            1 if x["has_variants"] else 0,
+            x["savoury_tier"],
+            x["overshoot_inr"],
+        )
+    )
+    return candidates[0]
+
+
 def optimize_cart_coupons(
     restaurant_id: str,
     custom_coupon_code: str = "",
+    allow_filler_arbitrage: bool = True,
 ) -> Dict[str, Any]:
     """
-    Fetches available coupons for the given restaurant on the current cart, tests
-    applicable coupon codes (or a specific custom_coupon_code if provided), and returns
-    the updated cart bill with maximum savings applied.
+    1. Fetches available coupons for the given restaurant on the current cart.
+    2. Applies the best currently applicable coupon to establish a baseline `to_pay_inr`.
+    3. NEGATIVE-COST MOV FILLER ARBITRAGE:
+       Checks if any locked coupon has an MOV deficit ("Add ₹X more to avail this offer")
+       where ₹1 <= X <= ₹100. If found, automatically searches the restaurant's menu for a
+       savoury side/bread (Roti, Naan, Kulcha, Papad, Raita, Dip), adds it to the cart,
+       applies the locked coupon, and keeps it automatically if the final `to_pay_inr`
+       drops below the solo-item bill!
 
     Args:
         restaurant_id: The Swiggy restaurant ID currently in the cart.
-        custom_coupon_code: Optional specific promo code to try applying (e.g. 'SWIGGYIT', 'TRYNEW').
+        custom_coupon_code: Optional specific promo code to try applying.
+        allow_filler_arbitrage: Whether to automatically run Negative-Cost MOV Filler Arbitrage (default True).
     """
     before_cart = view_current_cart()
     if before_cart.get("is_empty"):
         return before_cart
+
+    baseline_items = [
+        {"menu_item_id": str(i["menu_item_id"]), "quantity": int(i.get("quantity", 1))}
+        for i in before_cart.get("items", [])
+    ]
+    existing_ids = {i["menu_item_id"] for i in baseline_items}
 
     coupons_res = SWIGGY.call_tool(
         "fetch_food_coupons",
@@ -153,24 +442,24 @@ def optimize_cart_coupons(
         },
     )
 
-    discovered_codes: List[str] = []
-    if coupons_res.get("ok") and isinstance(coupons_res.get("data"), dict):
-        sections = coupons_res["data"].get("coupon_sections", [])
-        for sec in sections:
-            for c in sec.get("coupons", []) if isinstance(sec, dict) else []:
-                code = c.get("coupon_code") or c.get("code")
-                if code:
-                    discovered_codes.append(str(code))
+    applicable_coupons, locked_mov_coupons = _parse_coupons_and_deficits(coupons_res)
 
-    codes_to_try: List[str] = []
+    codes_to_try: List[Dict[str, Any]] = []
     if custom_coupon_code.strip():
-        codes_to_try.append(custom_coupon_code.strip().upper())
-    for c in discovered_codes:
-        if c not in codes_to_try:
-            codes_to_try.append(c)
+        codes_to_try.append(
+            {
+                "code": custom_coupon_code.strip(),
+                "title": custom_coupon_code.strip().upper(),
+                "estimated_save_inr": 999.0,
+            }
+        )
+    codes_to_try.extend(applicable_coupons)
 
     applied_results: List[Dict[str, Any]] = []
-    for code in codes_to_try[:5]:
+    best_baseline_code: Optional[str] = None
+
+    for entry in codes_to_try[:4]:
+        code = entry["code"]
         apply_res = SWIGGY.call_tool(
             "apply_food_coupon",
             {
@@ -181,16 +470,129 @@ def optimize_cart_coupons(
         applied_results.append(
             {
                 "code": code,
+                "title": entry.get("title"),
                 "ok": apply_res.get("ok"),
                 "response": apply_res.get("error") or apply_res.get("text"),
             }
         )
+        if apply_res.get("ok") and not best_baseline_code:
+            best_baseline_code = code
+            break
+
+    baseline_cart = view_current_cart()
+    baseline_bill = baseline_cart.get("bill_breakdown", {})
+    baseline_to_pay = float(baseline_bill.get("to_pay_inr") or 99999.0)
+    baseline_discount = float(baseline_bill.get("coupon_discount_inr") or 0.0)
+
+    filler_arbitrage_report: Optional[Dict[str, Any]] = None
+
+    # Step 3: Negative-Cost MOV Filler Arbitrage
+    if allow_filler_arbitrage and locked_mov_coupons:
+        # Filter locked coupons where deficit is reasonable (₹1 to ₹100)
+        viable_locked = [
+            c for c in locked_mov_coupons
+            if 1.0 <= c["deficit_inr"] <= 100.0
+        ]
+
+        for locked in viable_locked[:2]:
+            deficit = locked["deficit_inr"]
+            filler = _find_best_savoury_filler(
+                restaurant_id=str(restaurant_id),
+                deficit_inr=deficit,
+                existing_item_ids=existing_ids,
+            )
+            if not filler:
+                continue
+
+            # Stage baseline items + savoury filler
+            test_cart_items = baseline_items + [
+                {"menu_item_id": str(filler["menu_item_id"]), "quantity": 1}
+            ]
+            SWIGGY.call_tool(
+                "update_food_cart",
+                {
+                    "addressId": STATE.active_address_id,
+                    "restaurantId": str(restaurant_id),
+                    "cartItems": test_cart_items,
+                },
+            )
+            # Apply the unlocked higher-tier coupon
+            unlock_apply = SWIGGY.call_tool(
+                "apply_food_coupon",
+                {
+                    "couponCode": locked["code"],
+                    "addressId": STATE.active_address_id,
+                },
+            )
+            test_cart_raw = SWIGGY.call_tool(
+                "get_food_cart",
+                {"addressId": STATE.active_address_id},
+            )
+            test_cart = _extract_cart_summary(test_cart_raw)
+            test_bill = test_cart.get("bill_breakdown", {})
+            new_to_pay = float(test_bill.get("to_pay_inr") or 99999.0)
+            new_discount = float(test_bill.get("coupon_discount_inr") or 0.0)
+
+            # Did adding the savoury filler reduce the net bill (and unlock a bigger discount)?
+            if new_to_pay < baseline_to_pay and new_discount > baseline_discount:
+                net_saved = round(baseline_to_pay - new_to_pay, 2)
+                filler_arbitrage_report = {
+                    "triggered": True,
+                    "filler_menu_item_id": str(filler["menu_item_id"]),
+                    "filler_name": filler["name"],
+                    "filler_price_inr": filler["price_inr"],
+                    "filler_category": filler["category"],
+                    "deficit_bridged_inr": int(deficit) if deficit.is_integer() else deficit,
+                    "unlocked_coupon_title": locked["title"],
+                    "unlocked_discount_inr": int(new_discount) if new_discount.is_integer() else new_discount,
+                    "baseline_to_pay_inr": int(baseline_to_pay) if baseline_to_pay.is_integer() else baseline_to_pay,
+                    "new_to_pay_inr": int(new_to_pay) if new_to_pay.is_integer() else new_to_pay,
+                    "extra_net_savings_inr": int(net_saved) if net_saved.is_integer() else net_saved,
+                    "headline": (
+                        f"🎯 MOV Arbitrage Unlocked! Auto-added '{filler['name']}' (₹{filler['price_inr']}) "
+                        f"to bridge the ₹{int(deficit)} coupon gap and unlock {locked['title']} (-₹{int(new_discount)}). "
+                        f"Your final bill dropped from ₹{int(baseline_to_pay)} ➔ ₹{int(new_to_pay)} "
+                        f"(₹{int(net_saved)} cheaper net + free {filler['name']}!)."
+                    ),
+                }
+                final_cart = _extract_cart_summary(test_cart_raw, filler_arbitrage=filler_arbitrage_report)
+                final_cart["restaurant_id"] = str(restaurant_id)
+                STATE.last_cart_snapshot = final_cart
+                return {
+                    "ok": True,
+                    "mov_filler_arbitrage": filler_arbitrage_report,
+                    "discovered_applicable_coupons": [c["title"] for c in applicable_coupons],
+                    "discovered_locked_coupons": locked_mov_coupons,
+                    "tested_codes": applied_results,
+                    "updated_cart": final_cart,
+                }
+            else:
+                # Revert back to baseline items & baseline coupon
+                SWIGGY.call_tool(
+                    "update_food_cart",
+                    {
+                        "addressId": STATE.active_address_id,
+                        "restaurantId": str(restaurant_id),
+                        "cartItems": baseline_items,
+                    },
+                )
+                if best_baseline_code:
+                    SWIGGY.call_tool(
+                        "apply_food_coupon",
+                        {
+                            "couponCode": best_baseline_code,
+                            "addressId": STATE.active_address_id,
+                        },
+                    )
 
     after_cart = view_current_cart()
+    after_cart["restaurant_id"] = str(restaurant_id)
+    STATE.last_cart_snapshot = after_cart
     return {
         "ok": True,
-        "discovered_coupons": discovered_codes,
+        "mov_filler_arbitrage": {"triggered": False},
+        "discovered_applicable_coupons": [c["title"] for c in applicable_coupons],
+        "discovered_locked_coupons": locked_mov_coupons,
         "tested_codes": applied_results,
         "updated_cart": after_cart,
     }
-

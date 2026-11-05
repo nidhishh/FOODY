@@ -39,6 +39,7 @@ from foody_agent.tools import (
     initiate_upi_checkout,
     list_saved_addresses,
     optimize_cart_coupons,
+    remove_auto_filler_from_cart,
     search_smart_restaurants,
     stage_checkout_summary,
     switch_delivery_address,
@@ -110,8 +111,18 @@ def _format_cart_text(cart: Dict[str, Any]) -> str:
         "*Items:*",
     ]
     for idx, item in enumerate(cart.get("items", []), start=1):
+        filler_tag = " _(🎯 Auto-Filler)_" if item.get("is_auto_filler") else ""
         lines.append(
-            f"  {idx}. *{item.get('name')}* × {item.get('quantity')} — ₹{item.get('final_price_inr')}"
+            f"  {idx}. *{item.get('name')}* × {item.get('quantity')} — ₹{item.get('final_price_inr')}{filler_tag}"
+        )
+
+    arb = cart.get("filler_arbitrage")
+    if isinstance(arb, dict) and arb.get("triggered"):
+        lines.append("")
+        lines.append(
+            f"🎯 *MOV Arbitrage Active:*\n"
+            f"Added *{arb.get('filler_name')}* (₹{arb.get('filler_price_inr')}) to bridge ₹{arb.get('deficit_bridged_inr')} gap & unlock `{arb.get('unlocked_coupon_title')}` (-₹{arb.get('unlocked_discount_inr')})!\n"
+            f"📉 *Bill dropped:* ~₹{arb.get('baseline_to_pay_inr')}~ ➔ *₹{arb.get('new_to_pay_inr')}* (Saved ₹{arb.get('extra_net_savings_inr')} net + free side!)"
         )
 
     bill = cart.get("bill_breakdown", {})
@@ -134,18 +145,25 @@ def _format_cart_text(cart: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _cart_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+def _cart_keyboard(cart: Dict[str, Any] | None = None) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = [
         [
+            InlineKeyboardButton("💳 Stage UPI Checkout", callback_data="cart:stage_checkout"),
+            InlineKeyboardButton("🗑️ Clear Cart", callback_data="cart:clear"),
+        ],
+    ]
+    arb = (cart or STATE.last_cart_snapshot or {}).get("filler_arbitrage")
+    if isinstance(arb, dict) and arb.get("triggered"):
+        rows.append(
             [
-                InlineKeyboardButton("💳 Stage UPI Checkout", callback_data="cart:stage_checkout"),
-                InlineKeyboardButton("🗑️ Clear Cart", callback_data="cart:clear"),
-            ],
-            [
-                InlineKeyboardButton("💎 Browse Gourmet Steals", callback_data="menu:gourmet"),
-            ],
-        ]
-    )
+                InlineKeyboardButton(
+                    f"➖ Remove Auto-Filler ({arb.get('filler_name', 'Side')[:18]})",
+                    callback_data="cart:remove_filler",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("💎 Browse Gourmet Steals", callback_data="menu:gourmet")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _run_adk_agent(user_id: int, user_text: str) -> str:
@@ -301,7 +319,7 @@ async def cart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         _format_cart_text(cart),
         parse_mode="Markdown",
-        reply_markup=_cart_keyboard(),
+        reply_markup=_cart_keyboard(cart),
     )
 
 
@@ -424,7 +442,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             _format_cart_text(cart),
             parse_mode="Markdown",
-            reply_markup=_cart_keyboard(),
+            reply_markup=_cart_keyboard(cart),
         )
 
     elif data == "menu:cart":
@@ -432,7 +450,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             _format_cart_text(cart),
             parse_mode="Markdown",
-            reply_markup=_cart_keyboard(),
+            reply_markup=_cart_keyboard(cart),
+        )
+
+    elif data == "cart:remove_filler":
+        await query.edit_message_text("➖ Removing auto-added filler item & re-optimizing solo coupon...")
+        res = await asyncio.to_thread(remove_auto_filler_from_cart)
+        cart = res.get("updated_cart", res) if isinstance(res, dict) else await asyncio.to_thread(view_current_cart)
+        await query.edit_message_text(
+            _format_cart_text(cart),
+            parse_mode="Markdown",
+            reply_markup=_cart_keyboard(cart),
         )
 
     elif data == "cart:clear":

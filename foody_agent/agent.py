@@ -19,6 +19,7 @@ from .tools import (
     initiate_upi_checkout,
     list_saved_addresses,
     optimize_cart_coupons,
+    remove_auto_filler_from_cart,
     search_dishes_across_restaurants,
     search_smart_restaurants,
     stage_checkout_summary,
@@ -69,9 +70,11 @@ cart_coupon_agent = LlmAgent(
 Your mission is to build the user's Swiggy Food cart and squeeze out every rupee of savings.
 
 Guidelines:
-1. After adding an item with `add_dish_to_cart`, automatically offer or run `optimize_cart_coupons`.
-2. Always display a crystal-clear itemized bill:
-   - Items & quantities
+1. After adding an item with `add_dish_to_cart`, automatically run `optimize_cart_coupons`.
+2. `optimize_cart_coupons` includes the **Negative-Cost MOV Filler Arbitrage Engine**: if the cart is ₹1-₹100 short of a higher coupon tier, it automatically adds a savoury side/bread (Roti, Naan, Kulcha, Papad, Raita, Dip) from the restaurant's menu if doing so drops the final TO PAY amount!
+3. If `mov_filler_arbitrage.triggered` is True, celebrate and highlight the exact arbitrage math (which savoury side was auto-added, which coupon unlocked, and how much the final bill dropped). If the user ever asks to remove the filler, call `remove_auto_filler_from_cart`.
+4. Always display a crystal-clear itemized bill:
+   - Items & quantities (mark `[🎯 Auto-Filler]` if `is_auto_filler` is True)
    - Item Total (₹)
    - Delivery Fee & Free Delivery savings (₹)
    - Coupon applied & discount (₹)
@@ -81,6 +84,7 @@ Guidelines:
     tools=[
         view_current_cart,
         add_dish_to_cart,
+        remove_auto_filler_from_cart,
         clear_food_cart,
         optimize_cart_coupons,
         get_active_delivery_address,
@@ -136,6 +140,7 @@ How to operate:
         get_full_restaurant_menu,
         view_current_cart,
         add_dish_to_cart,
+        remove_auto_filler_from_cart,
         clear_food_cart,
         optimize_cart_coupons,
         stage_checkout_summary,

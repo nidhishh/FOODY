@@ -173,7 +173,26 @@ def search_smart_restaurants(
         )
 
     scored_rests.sort(key=lambda x: -x["composite_score"])
-    top_candidates = scored_rests[:8]
+
+    # De-clone Ghost Kitchens: If multiple brands share the exact same (area, distance_km)
+    # dark-kitchen shed, keep the #1 highest-rated brand in the primary list and tag sister clones.
+    cluster_map: Dict[str, List[str]] = {}
+    decloned_rests: List[Dict[str, Any]] = []
+    for r in scored_rests:
+        shed_key = f"{str(r.get('area', '')).strip().lower()}_{r.get('distance_km')}"
+        if shed_key not in cluster_map:
+            cluster_map[shed_key] = [r["name"]]
+            r["ghost_kitchen_clones_hidden"] = []
+            decloned_rests.append(r)
+        else:
+            cluster_map[shed_key].append(r["name"])
+            for primary in decloned_rests:
+                p_key = f"{str(primary.get('area', '')).strip().lower()}_{primary.get('distance_km')}"
+                if p_key == shed_key:
+                    primary["ghost_kitchen_clones_hidden"].append(r["name"])
+                    break
+
+    top_candidates = decloned_rests[:8]
 
     # Quick peek: Fetch cheapest bestseller for top 3 restaurants in parallel
     def _peek_menu(rid: str) -> Optional[Dict[str, Any]]:
@@ -395,7 +414,10 @@ def get_full_restaurant_menu(
 
     for cat in categories:
         cat_title = str(cat.get("title", "Menu"))
-        for item in cat.get("items", []):
+        raw_cat_items = list(cat.get("items", []))
+        for sub in cat.get("subcategories", []):
+            raw_cat_items.extend(sub.get("items", []))
+        for item in raw_cat_items:
             mid = str(item.get("id", ""))
             if not mid or mid in seen_ids:
                 continue
