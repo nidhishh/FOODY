@@ -13,13 +13,14 @@ from .tools import (
     check_payment_and_confirm_order,
     clear_food_cart,
     find_cheapest_lunch_deals,
+    find_gourmet_steals,
     get_active_delivery_address,
     get_full_restaurant_menu,
     initiate_upi_checkout,
     list_saved_addresses,
     optimize_cart_coupons,
     search_dishes_across_restaurants,
-    search_restaurants_by_query,
+    search_smart_restaurants,
     stage_checkout_summary,
     switch_delivery_address,
     track_active_or_recent_orders,
@@ -31,25 +32,27 @@ deal_hunter_agent = LlmAgent(
     name="deal_hunter_agent",
     model=FOODY_MODEL,
     description=(
-        "Specialized in finding the cheapest lunches, 80% off / BOGO restaurant deals, "
-        "thalis, biryanis, high-protein meals, and browsing restaurant menus."
+        "Specialized in finding the best meals on Swiggy: from Gourmet Arbitrage Steals "
+        "(premium restaurants like Toscano, Kitchen Garden, Pizza By The Bay dropped to ₹200-₹260 with coupons) "
+        "to smart ranked restaurants (de-prioritizing Ads) and cheapest value thalis/biryanis."
     ),
     instruction="""You are FOODY's Smart Deal Hunter sub-agent.
-Your mission is to find the highest-value, lowest-cost meals on Swiggy Food for the user's active address.
+Your mission is to find the highest-value, best-quality food on Swiggy for the user's active address.
 
-Guidelines:
-1. When asked for cheap lunches, max discounts, or budget meals, call `find_cheapest_lunch_deals` first.
-2. When asked for a specific dish (e.g., 'Maharaja Mac', 'Chicken Biryani', 'Masala Dosa'), call `search_dishes_across_restaurants`.
-3. When asked to inspect a specific restaurant's menu, call `get_full_restaurant_menu` using its `restaurant_id`.
-4. Always include:
-   - Dish Name & exact Price (₹)
-   - Restaurant Name, Rating (⭐), and Delivery Time
-   - The `restaurant_id` and `menu_item_id` so the user or Cart Agent can add it in 1 click.
+Key Guidelines:
+1. When the user asks for 'gourmet', 'good food for less', 'high quality lunch', or 'steals', call `find_gourmet_steals`.
+   - Highlight the original price vs estimated post-coupon payment (e.g. "~₹380~ ➔ Est. ₹225 with coupon").
+   - Mention the boutique brand name and rating.
+2. When the user asks for restaurant recommendations for a cuisine/dish (e.g. 'Italian', 'Pizza', 'North Indian'), call `search_smart_restaurants`.
+   - Sponsored Ads are already de-prioritized; emphasize the top organic composite score and cheapest bestseller.
+3. When the user strictly asks for the cheapest possible meals or everyday thalis, call `find_cheapest_lunch_deals`.
+4. Always provide clear dish names, exact prices (₹), and `restaurant_id` / `menu_item_id` so items can be added to cart with 1 click.
 """,
     tools=[
+        find_gourmet_steals,
+        search_smart_restaurants,
         find_cheapest_lunch_deals,
         search_dishes_across_restaurants,
-        search_restaurants_by_query,
         get_full_restaurant_menu,
         get_active_delivery_address,
     ],
@@ -66,7 +69,7 @@ cart_coupon_agent = LlmAgent(
 Your mission is to build the user's Swiggy Food cart and squeeze out every rupee of savings.
 
 Guidelines:
-1. After adding an item with `add_dish_to_cart`, automatically offer or run `optimize_cart_coupons` if the user asked for max discount.
+1. After adding an item with `add_dish_to_cart`, automatically offer or run `optimize_cart_coupons`.
 2. Always display a crystal-clear itemized bill:
    - Items & quantities
    - Item Total (₹)
@@ -74,7 +77,6 @@ Guidelines:
    - Coupon applied & discount (₹)
    - Taxes & restaurant charges (₹)
    - Final **TO PAY** (₹)
-3. Remind the user that Swiggy MCP carts live in the agent session and will appear in their mobile app's Active Orders immediately after UPI checkout.
 """,
     tools=[
         view_current_cart,
@@ -111,25 +113,26 @@ CRITICAL SAFETY RULE:
 root_agent = LlmAgent(
     name="foody_coordinator",
     model=FOODY_MODEL,
-    description="FOODY: Personal Swiggy Food AI Coordinator powered by Google ADK and Gemini.",
-    instruction="""You are FOODY, a fast, street-smart Swiggy Food concierge powered by Google ADK & Gemini.
-You help the user discover the cheapest & best-rated meals, build carts with maximum discounts, and safely checkout via UPI.
+    description="FOODY: Street-smart Swiggy Food AI Coordinator powered by Google ADK and Gemini.",
+    instruction="""You are FOODY, a street-smart Swiggy Food concierge powered by Google ADK & Gemini.
+You understand customer behavior: users don't just want the cheapest oily food—they want the highest delta between quality and price (Gourmet food for ₹200-₹260).
 
 How to operate:
-- You have direct access to all Swiggy tools AND three specialist sub-agents (`deal_hunter_agent`, `cart_coupon_agent`, `checkout_gate_agent`).
-- For address checks or switching between saved addresses (e.g., Office Nariman Point, Worli, Goa, Pune, Hyderabad), use `get_active_delivery_address`, `list_saved_addresses`, or `switch_delivery_address`.
-- For deal hunting ("cheapest lunch", "80% off deals", "high-protein meal under ₹250"), use `find_cheapest_lunch_deals` or delegate to `deal_hunter_agent`.
-- For cart updates & coupon testing, use `add_dish_to_cart` / `optimize_cart_coupons` or delegate to `cart_coupon_agent`.
-- For checkout, ALWAYS enforce the 2-step safety gate: show `stage_checkout_summary` first, and only run `unlock_checkout_gate` + `initiate_upi_checkout` after explicit user confirmation.
-- Keep responses concise, structured in clean Markdown, and always highlight prices in ₹.
+- For high-quality / gourmet food on a budget, use `find_gourmet_steals`.
+- For curated restaurant discovery, use `search_smart_restaurants` (which strips out Ads and ranks by quality score).
+- For everyday cheap comfort meals, use `find_cheapest_lunch_deals`.
+- For cart building & coupon testing, use `add_dish_to_cart` and `optimize_cart_coupons`.
+- For checkout, ALWAYS enforce the 2-step safety gate: show `stage_checkout_summary` first, and only proceed after explicit confirmation.
+- Format responses in clean, structured Markdown, always highlighting prices in ₹.
 """,
     tools=[
         get_active_delivery_address,
         list_saved_addresses,
         switch_delivery_address,
+        find_gourmet_steals,
+        search_smart_restaurants,
         find_cheapest_lunch_deals,
         search_dishes_across_restaurants,
-        search_restaurants_by_query,
         get_full_restaurant_menu,
         view_current_cart,
         add_dish_to_cart,
@@ -147,4 +150,3 @@ How to operate:
         checkout_gate_agent,
     ],
 )
-

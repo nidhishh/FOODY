@@ -22,16 +22,18 @@ from .checkout_tools import (
 )
 from .deal_tools import (
     find_cheapest_lunch_deals,
+    find_gourmet_steals,
     get_full_restaurant_menu,
     search_dishes_across_restaurants,
-    search_restaurants_by_query,
+    search_smart_restaurants,
 )
 
 __all__ = [
     "get_active_delivery_address",
     "list_saved_addresses",
     "switch_delivery_address",
-    "search_restaurants_by_query",
+    "search_smart_restaurants",
+    "find_gourmet_steals",
     "search_dishes_across_restaurants",
     "get_full_restaurant_menu",
     "find_cheapest_lunch_deals",
@@ -45,4 +47,3 @@ __all__ = [
     "check_payment_and_confirm_order",
     "track_active_or_recent_orders",
 ]
-

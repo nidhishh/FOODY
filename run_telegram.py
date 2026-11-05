@@ -1,7 +1,7 @@
 """
 Telegram Bot Runner for the FOODY Google ADK Agent.
 Combines conversational Google ADK (`root_agent` + Gemini) with 1-tap inline buttons
-for address switching, deal hunting, cart building, and safe UPI checkout.
+for Gourmet Steals, smart search, address switching, deal hunting, and safe UPI checkout.
 """
 
 from __future__ import annotations
@@ -35,9 +35,11 @@ from foody_agent.tools import (
     add_dish_to_cart,
     clear_food_cart,
     find_cheapest_lunch_deals,
+    find_gourmet_steals,
     initiate_upi_checkout,
     list_saved_addresses,
     optimize_cart_coupons,
+    search_smart_restaurants,
     stage_checkout_summary,
     switch_delivery_address,
     unlock_checkout_gate,
@@ -76,7 +78,10 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("🔥 Cheapest Lunch Deals", callback_data="menu:deals"),
+                InlineKeyboardButton("💎 Gourmet Steals (₹200-₹260)", callback_data="menu:gourmet"),
+            ],
+            [
+                InlineKeyboardButton("🔥 Value Lunch Deals", callback_data="menu:deals"),
                 InlineKeyboardButton("🛒 View Cart", callback_data="menu:cart"),
             ],
             [
@@ -94,7 +99,7 @@ def _format_cart_text(cart: Dict[str, Any]) -> str:
         return (
             f"🛒 *Your Swiggy Cart is Empty*\n"
             f"📍 *Delivering to:* {STATE.active_address_label}\n\n"
-            f"Tap *🔥 Cheapest Lunch Deals* or tell me what you're craving!"
+            f"Tap *💎 Gourmet Steals* or *🔥 Value Lunch Deals* to add something delicious!"
         )
 
     lines = [
@@ -137,7 +142,7 @@ def _cart_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🗑️ Clear Cart", callback_data="cart:clear"),
             ],
             [
-                InlineKeyboardButton("🔥 Browse More Deals", callback_data="menu:deals"),
+                InlineKeyboardButton("💎 Browse Gourmet Steals", callback_data="menu:gourmet"),
             ],
         ]
     )
@@ -186,16 +191,61 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome = (
         "🍔 *Yo! Welcome to FOODY (Google ADK + Swiggy MCP)*\n\n"
         f"📍 *Active Address:* `{STATE.active_address_label}`\n\n"
-        "You can chat with me naturally:\n"
-        "• _\"Find me the cheapest chicken lunch under ₹200\"_\n"
-        "• _\"Add a Chicken Maharaja Mac to my cart\"_\n"
-        "• _\"Show 80% off and BOGO pizza places near me\"_\n\n"
-        "Or use the quick action buttons below:"
+        "Smart Food Concierge built for high-value orders:\n"
+        "• *💎 Gourmet Steals:* High-end food (Kitchen Garden, Toscano, Smoke House Deli) dropped to ₹200-₹260 via coupons.\n"
+        "• *🔍 Smart Ranking:* Strips out sponsored ads and finds authentic bestsellers.\n\n"
+        "Tap a button below or tell me what you're craving:"
     )
     await update.message.reply_text(
         welcome,
         parse_mode="Markdown",
         reply_markup=_main_menu_keyboard(),
+    )
+
+
+async def gourmet_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not _is_authorized(update.effective_user.id):
+        return
+    msg = await update.message.reply_text("💎 Hunting Gourmet Steals across South Mumbai boutique spots...")
+    res = await asyncio.to_thread(find_gourmet_steals, "gourmet", 260, False)
+    steals = res.get("gourmet_steals", [])
+    LAST_DEALS_CACHE[update.effective_user.id] = steals
+
+    if not steals:
+        await msg.edit_text("No gourmet steals under ₹260 found right now. Tap /deals for value lunch deals!")
+        return
+
+    lines = [
+        f"💎 *Gourmet Arbitrage Steals (Est. Landed ≤ ₹260)*",
+        f"📍 _{STATE.active_address_label}_\n",
+    ]
+    buttons: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+
+    for idx, s in enumerate(steals[:6], start=1):
+        veg_icon = "🟢" if s.get("is_veg") else "🔴"
+        lines.append(
+            f"*{idx}. {veg_icon} {s['dish_name']}*\n"
+            f"   🏪 {s['restaurant_name']} (⭐ {s['restaurant_rating']} · {s['delivery_time']})\n"
+            f"   💰 ~₹{s['original_price_inr']}~ ➔ *Est. ₹{s['estimated_landed_inr']}* ({s['savings_tag']})"
+        )
+        row.append(
+            InlineKeyboardButton(
+                f"➕ Add #{idx} (₹{s['estimated_landed_inr']})",
+                callback_data=f"adddeal:{idx - 1}",
+            )
+        )
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("🛒 View Cart", callback_data="menu:cart")])
+
+    await msg.edit_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -264,7 +314,6 @@ async def address_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     for a in addrs:
         active_mark = "✅ " if a.get("is_active") else ""
         label = f"{active_mark}{a.get('tag')}: {str(a.get('addressLine', ''))[:38]}..."
-        # Store index to avoid 64-byte callback_data limit
         buttons.append([InlineKeyboardButton(label, callback_data=f"setaddr:{a.get('index')}")])
 
     await update.message.reply_text(
@@ -282,7 +331,45 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data or ""
     uid = update.effective_user.id
 
-    if data == "menu:deals":
+    if data == "menu:gourmet":
+        await query.edit_message_text("💎 Hunting Gourmet Steals across South Mumbai boutique spots...")
+        res = await asyncio.to_thread(find_gourmet_steals, "gourmet", 260, False)
+        steals = res.get("gourmet_steals", [])
+        LAST_DEALS_CACHE[uid] = steals
+
+        if not steals:
+            await query.edit_message_text("No gourmet steals under ₹260 found right now. Tap /deals for lunch deals!")
+            return
+
+        lines = [f"💎 *Gourmet Arbitrage Steals (Est. Landed ≤ ₹260)*\n📍 _{STATE.active_address_label}_\n"]
+        buttons: List[List[InlineKeyboardButton]] = []
+        row: List[InlineKeyboardButton] = []
+        for idx, s in enumerate(steals[:6], start=1):
+            veg_icon = "🟢" if s.get("is_veg") else "🔴"
+            lines.append(
+                f"*{idx}. {veg_icon} {s['dish_name']}*\n"
+                f"   🏪 {s['restaurant_name']} (⭐ {s['restaurant_rating']} · {s['delivery_time']})\n"
+                f"   💰 ~₹{s['original_price_inr']}~ ➔ *Est. ₹{s['estimated_landed_inr']}* ({s['savings_tag']})"
+            )
+            row.append(
+                InlineKeyboardButton(
+                    f"➕ Add #{idx} (₹{s['estimated_landed_inr']})",
+                    callback_data=f"adddeal:{idx - 1}",
+                )
+            )
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("🛒 View Cart", callback_data="menu:cart")])
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    elif data == "menu:deals":
         await query.edit_message_text("🔍 Scanning Swiggy for the cheapest high-rated lunches...")
         res = await asyncio.to_thread(find_cheapest_lunch_deals, "lunch", 280, False, 3.8)
         meals = res.get("top_cheapest_meals", [])
@@ -318,14 +405,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         idx = int(data.split(":")[1])
         meals = LAST_DEALS_CACHE.get(uid, [])
         if idx >= len(meals):
-            await query.edit_message_text("Deal cache expired. Tap /deals to refresh!")
+            await query.edit_message_text("Deal cache expired. Tap /deals or /gourmet to refresh!")
             return
         chosen = meals[idx]
         await query.edit_message_text(
-            f"🛒 Adding *{chosen['dish_name']}* from *{chosen['restaurant_name']}* to your cart & checking coupons...",
+            f"🛒 Adding *{chosen['dish_name']}* from *{chosen['restaurant_name']}* to your cart & optimizing coupons...",
             parse_mode="Markdown",
         )
-        cart = await asyncio.to_thread(
+        await asyncio.to_thread(
             add_dish_to_cart,
             chosen["restaurant_id"],
             chosen["menu_item_id"],
@@ -379,7 +466,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         await query.edit_message_text(
             _format_cart_text(cart)
-            + "\n\n🔒 *SAFETY GATE:* Tap below only if you want to generate a live UPI payment request for this order:",
+            + "\n\n🔒 *SAFETY GATE:* Tap below to generate your Swiggy UPI payment request:",
             parse_mode="Markdown",
             reply_markup=confirm_kb,
         )
@@ -441,7 +528,6 @@ async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_T
                 reply_markup=_main_menu_keyboard(),
             )
         except Exception:
-            # Fallback if Gemini emitted unescaped Markdown characters
             await thinking_msg.edit_text(
                 reply[:4000],
                 reply_markup=_main_menu_keyboard(),
@@ -456,23 +542,19 @@ def main() -> None:
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
     if not api_key or api_key == "your_gemini_api_key_here":
-        print("⚠️ Missing GOOGLE_API_KEY / GEMINI_API_KEY in .env! Run `python setup_env.py` first.")
+        print("⚠️ Missing GOOGLE_API_KEY / GEMINI_API_KEY in .env!")
         return
 
     if not bot_token or bot_token == "your_telegram_bot_token_here":
-        print(
-            "⚠️ Missing TELEGRAM_BOT_TOKEN in .env!\n"
-            "• To use the Google ADK Browser UI right now without Telegram, run:\n"
-            "    adk web\n"
-            "• Or add TELEGRAM_BOT_TOKEN to .env (via `python setup_env.py`) and re-run `python run_telegram.py`."
-        )
+        print("⚠️ Missing TELEGRAM_BOT_TOKEN in .env!")
         return
 
-    print(f"🚀 Starting FOODY Telegram Bot (Model: {os.getenv('FOODY_MODEL', 'gemini-2.5-flash')})...")
+    print(f"🚀 Starting FOODY Telegram Bot (Model: {os.getenv('FOODY_MODEL', 'gemini-3.5-flash-lite')})...")
     print(f"📍 Default Delivery Address: {STATE.active_address_label}")
 
     app = Application.builder().token(bot_token).build()
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("gourmet", gourmet_cmd))
     app.add_handler(CommandHandler("deals", deals_cmd))
     app.add_handler(CommandHandler("cart", cart_cmd))
     app.add_handler(CommandHandler("address", address_cmd))
@@ -484,4 +566,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
