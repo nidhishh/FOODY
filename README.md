@@ -4,13 +4,15 @@
 
 ---
 
-## 💡 Why I Built FOODY (The Product Thesis)
+## 💡 Why I Built FOODY
 
-Every afternoon in high-density office hubs like South Mumbai (Nariman Point / Fort), ordering lunch on food delivery apps has become an exhausting, high-friction chore:
-1. **Ad-Polluted Feeds & Decision Fatigue**: Opening Swiggy or Zomato bombards you with sponsored ads, banners, and infinite scrolling, obscuring authentic high-rated local kitchens.
-2. **The "Gourmet Arbitrage" Opportunity**: As urban consumers, we don't want cheap, low-quality food; **we want the highest delta between perceived quality and actual price paid**. We would rather eat a ₹450 artisanal sourdough sandwich, wood-fired Neapolitan pizza, or a gourmet bistro bowl dropped to **₹220–₹250 after smart coupon stacking** than settle for an unbranded oily meal.
-3. **The Hidden Coupon Maze**: Manually copying promo codes, testing cart minimum thresholds, and calculating dynamic delivery fees wastes 10–15 minutes every single day.
-4. **Agentic Commerce in the Real World**: With the emergence of the Model Context Protocol (MCP), AI shouldn't just summarize text—it should transact on our behalf. I built FOODY to turn everyday food ordering into a street-smart, 2-tap conversational experience directly from Telegram.
+> **"Honestly? Because I was too lazy to open Swiggy, scroll through 50 ads, compare 10 different restaurants, and manually test 5 coupon codes every single afternoon just to get lunch."**
+
+The best software is born out of pure, unadulterated laziness:
+1. **Decision Fatigue is Real**: Spending 15 minutes debating between burgers, thalis, and biryanis while scrolling past sponsored carousel banners is an everyday productivity killer.
+2. **The Coupon Friction**: I want the best food for the lowest price without having to manually copy-paste `TRYNEW`, `WELCOME50`, or calculate cart minimums.
+3. **The Gourmet Deal Hack**: If a ₹450 artisanal lunch bowl or wood-fired pizza can be dropped to **₹220–₹250 with coupons**, I want an agent to spot that discount and stage it for me in 2 taps.
+4. **Chat > Apps**: I live on Telegram. Sending a quick text like *"Get me the cheapest chicken lunch near me"* and tapping a single button to pay via UPI is 10x faster than navigating an app.
 
 ---
 
