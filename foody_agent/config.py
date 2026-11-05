@@ -24,7 +24,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 if os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
 
-FOODY_MODEL = os.getenv("FOODY_MODEL", "gemini-2.5-flash")
+FOODY_MODEL = os.getenv("FOODY_MODEL", "gemini-3.5-flash-lite")
 SWIGGY_FOOD_MCP_URL = "https://mcp.swiggy.com/food"
 SWIGGY_DINEOUT_MCP_URL = "https://mcp.swiggy.com/dineout"
 SWIGGY_INSTAMART_MCP_URL = "https://mcp.swiggy.com/im"
