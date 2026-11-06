@@ -103,53 +103,29 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
 
 def _format_cart_text(cart: Dict[str, Any]) -> str:
     if not cart.get("ok"):
-        return f"⚠️ Error fetching cart: {cart.get('error', 'Unknown error')}"
+        return f"⚠️ {cart.get('error', 'Error fetching cart')}"
     if cart.get("is_empty"):
-        return (
-            f"🛒 *Your Swiggy Cart is Empty*\n"
-            f"📍 *Delivering to:* {STATE.active_address_label}\n\n"
-            f"Tap *💎 Gourmet Steals* or *🔥 Value Lunch Deals* to add something delicious!"
-        )
+        return f"🛒 *Cart is empty.* (📍 {STATE.active_address_label})"
 
-    lines = [
-        f"🛒 *Live Swiggy Cart* (`#{cart.get('cart_id', '')}`)",
-        f"🏪 *Restaurant:* {cart.get('restaurant_name') or 'Selected Outlet'}",
-        f"📍 *Delivering to:* {cart.get('active_address')}",
-        "",
-        "*Items:*",
-    ]
+    bill = cart.get("bill_breakdown", {})
+    rest_name = cart.get("restaurant_name") or "Outlet"
+    lines = [f"🛒 *Cart:* {rest_name}"]
     for idx, item in enumerate(cart.get("items", []), start=1):
         filler_tag = " _(🎯 Auto-Filler)_" if item.get("is_auto_filler") else ""
-        lines.append(
-            f"  {idx}. *{item.get('name')}* × {item.get('quantity')} — ₹{item.get('final_price_inr')}{filler_tag}"
-        )
+        lines.append(f"• {item.get('name')} × {item.get('quantity')} — ₹{item.get('final_price_inr')}{filler_tag}")
 
     arb = cart.get("filler_arbitrage")
     if isinstance(arb, dict) and arb.get("triggered"):
-        lines.append("")
-        lines.append(
-            f"🎯 *MOV Arbitrage Active:*\n"
-            f"Added *{arb.get('filler_name')}* (₹{arb.get('filler_price_inr')}) to bridge ₹{arb.get('deficit_bridged_inr')} gap & unlock `{arb.get('unlocked_coupon_title')}` (-₹{arb.get('unlocked_discount_inr')})!\n"
-            f"📉 *Bill dropped:* ~₹{arb.get('baseline_to_pay_inr')}~ ➔ *₹{arb.get('new_to_pay_inr')}* (Saved ₹{arb.get('extra_net_savings_inr')} net + free side!)"
-        )
+        lines.append(f"🎯 *Arbitrage:* Added {arb.get('filler_name')} to save ₹{arb.get('extra_net_savings_inr')} net")
 
-    bill = cart.get("bill_breakdown", {})
-    lines.append("")
-    lines.append("*Bill Breakdown:*")
-    lines.append(f"• Item Total: ₹{bill.get('item_total_inr')}")
-    if bill.get("free_delivery_applied") or bill.get("delivery_charge_inr") == 0:
-        saved = bill.get("delivery_fee_saved_inr", 0)
-        saved_str = f" (Saved ₹{saved}!)" if saved else ""
-        lines.append(f"• Delivery Fee: *FREE*{saved_str}")
-    else:
-        lines.append(f"• Delivery Fee: ₹{bill.get('delivery_charge_inr')}")
-
-    if bill.get("coupon_discount_inr"):
-        lines.append(
-            f"• Coupon (`{bill.get('coupon_applied')}`): -₹{bill.get('coupon_discount_inr')}"
-        )
-    lines.append(f"• Taxes & Packing: ₹{bill.get('taxes_and_charges_inr')}")
-    lines.append(f"💰 *TO PAY: ₹{bill.get('to_pay_inr')}*")
+    disc = bill.get("coupon_discount_inr") or 0
+    del_str = "Del: FREE" if (bill.get("free_delivery_applied") or bill.get("delivery_charge_inr") == 0) else f"Del: ₹{bill.get('delivery_charge_inr')}"
+    save_parts = []
+    if disc:
+        save_parts.append(f"Saved ₹{disc}")
+    save_parts.append(del_str)
+    savings_text = f" ({' | '.join(save_parts)})" if save_parts else ""
+    lines.append(f"💰 *Net To Pay: ₹{bill.get('to_pay_inr')}*{savings_text}")
     return "\n".join(lines)
 
 
@@ -233,32 +209,27 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def gourmet_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not _is_authorized(update.effective_user.id):
         return
-    msg = await update.message.reply_text("💎 Hunting Gourmet Steals across South Mumbai boutique spots...")
+    msg = await update.message.reply_text("💎 Hunting Gourmet Steals...")
     res = await asyncio.to_thread(find_gourmet_steals, "gourmet", 260, False)
     steals = res.get("gourmet_steals", [])
     LAST_DEALS_CACHE[update.effective_user.id] = steals
 
     if not steals:
-        await msg.edit_text("No gourmet steals under ₹260 found right now. Tap /deals for value lunch deals!")
+        await msg.edit_text("No gourmet steals under ₹260 found right now. Tap /deals for value lunches!")
         return
 
-    lines = [
-        f"💎 *Gourmet Arbitrage Steals (Est. Landed ≤ ₹260)*",
-        f"📍 _{STATE.active_address_label}_\n",
-    ]
+    lines = [f"💎 *Gourmet Steals (≤ ₹260)*\n"]
     buttons: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
 
-    for idx, s in enumerate(steals[:6], start=1):
+    for idx, s in enumerate(steals[:4], start=1):
         veg_icon = "🟢" if s.get("is_veg") else "🔴"
         lines.append(
-            f"*{idx}. {veg_icon} {s['dish_name']}*\n"
-            f"   🏪 {s['restaurant_name']} (⭐ {s['restaurant_rating']} · {s['delivery_time']})\n"
-            f"   💰 ~₹{s['original_price_inr']}~ ➔ *Est. ₹{s['estimated_landed_inr']}* ({s['savings_tag']})"
+            f"{idx}. {veg_icon} *{s['dish_name']}* — *₹{s['estimated_landed_inr']}* ~₹{s['original_price_inr']}~ · {s['restaurant_name']} (⭐{s['restaurant_rating']})"
         )
         row.append(
             InlineKeyboardButton(
-                f"➕ Add #{idx} (₹{s['estimated_landed_inr']})",
+                f"➕ #{idx} (₹{s['estimated_landed_inr']})",
                 callback_data=f"adddeal:{idx - 1}",
             )
         )
@@ -279,31 +250,27 @@ async def gourmet_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def deals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not _is_authorized(update.effective_user.id):
         return
-    msg = await update.message.reply_text("🔍 Scanning Swiggy for the cheapest high-rated lunches...")
+    msg = await update.message.reply_text("🔍 Scanning cheapest high-rated lunches...")
     res = await asyncio.to_thread(find_cheapest_lunch_deals, "lunch", 280, False, 3.8)
     meals = res.get("top_cheapest_meals", [])
     LAST_DEALS_CACHE[update.effective_user.id] = meals
 
     if not meals:
-        await msg.edit_text("No meals found under ₹280 right now. Try asking me for a specific dish!")
+        await msg.edit_text("No meals found under ₹280 right now.")
         return
 
-    lines = [
-        f"🔥 *Cheapest Full Lunches Near You*",
-        f"📍 _{STATE.active_address_label}_\n",
-    ]
+    lines = [f"🔥 *Value Lunches (≤ ₹280)*\n"]
     buttons: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
 
-    for idx, m in enumerate(meals[:6], start=1):
+    for idx, m in enumerate(meals[:4], start=1):
         veg_icon = "🟢" if m.get("is_veg") else "🔴"
         lines.append(
-            f"*{idx}. {veg_icon} {m['dish_name']}* — *₹{m['price_inr']}*\n"
-            f"   🏪 {m['restaurant_name']} (⭐ {m['restaurant_rating']} · {m['delivery_time']})"
+            f"{idx}. {veg_icon} *{m['dish_name']}* — *₹{m['price_inr']}* · {m['restaurant_name']} (⭐{m['restaurant_rating']})"
         )
         row.append(
             InlineKeyboardButton(
-                f"➕ Add #{idx} (₹{m['price_inr']})",
+                f"➕ #{idx} (₹{m['price_inr']})",
                 callback_data=f"adddeal:{idx - 1}",
             )
         )
@@ -324,26 +291,20 @@ async def deals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def dineout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not _is_authorized(update.effective_user.id):
         return
-    msg = await update.message.reply_text("🍽️ Searching top Dineout restaurants & bill discounts near you...")
-    res = await asyncio.to_thread(search_dineout_restaurants, "restaurant", "", 6)
+    msg = await update.message.reply_text("🍽️ Searching top Dineout offers...")
+    res = await asyncio.to_thread(search_dineout_restaurants, "restaurant", "", 4)
     rests = res.get("restaurants", [])
     if not rests:
-        await msg.edit_text("No Dineout restaurants found in this area right now. Try specifying a locality like 'Dineout in Bandra'!")
+        await msg.edit_text("No Dineout restaurants found in this area right now.")
         return
 
-    lines = [
-        f"🍽️ *Top Dineout Restaurants & Offers*",
-        f"📍 _{res.get('resolved_area', STATE.active_address_label)}_\n",
-    ]
+    lines = [f"🍽️ *Dineout Deals* — {res.get('resolved_area', STATE.active_address_label)}\n"]
     buttons: List[List[InlineKeyboardButton]] = []
-    for idx, r in enumerate(rests[:5], start=1):
-        offer_str = f"\n   🏷️ *{r['active_offer']}*" if r.get("active_offer") else ""
-        lines.append(
-            f"*{idx}. {r['name']}* (⭐ {r['rating']} · {r['locality']})\n"
-            f"   🍴 {r['cuisine']} · {r['cost_for_two']}{offer_str}"
-        )
+    for idx, r in enumerate(rests[:4], start=1):
+        offer = f" ({r['active_offer']})" if r.get("active_offer") else ""
+        lines.append(f"{idx}. *{r['name']}* — ⭐{r['rating']} · {r['cost_for_two']}{offer} · {r['locality']}")
         buttons.append([
-            InlineKeyboardButton(f"📅 Slots: {r['name'][:16]}", callback_data=f"doslot:{r['restaurant_id']}"),
+            InlineKeyboardButton(f"📅 Slots: {r['name'][:14]}", callback_data=f"doslot:{r['restaurant_id']}"),
             InlineKeyboardButton("ℹ️ Offers", callback_data=f"dodet:{r['restaurant_id']}"),
         ])
     buttons.append([InlineKeyboardButton("🔙 Main Menu", callback_data="menu:back")])
@@ -392,28 +353,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     uid = update.effective_user.id
 
     if data == "menu:gourmet":
-        await query.edit_message_text("💎 Hunting Gourmet Steals across South Mumbai boutique spots...")
+        await query.edit_message_text("💎 Hunting Gourmet Steals...")
         res = await asyncio.to_thread(find_gourmet_steals, "gourmet", 260, False)
         steals = res.get("gourmet_steals", [])
         LAST_DEALS_CACHE[uid] = steals
 
         if not steals:
-            await query.edit_message_text("No gourmet steals under ₹260 found right now. Tap /deals for lunch deals!")
+            await query.edit_message_text("No gourmet steals under ₹260 found right now. Tap /deals for value lunches!")
             return
 
-        lines = [f"💎 *Gourmet Arbitrage Steals (Est. Landed ≤ ₹260)*\n📍 _{STATE.active_address_label}_\n"]
+        lines = [f"💎 *Gourmet Steals (≤ ₹260)*\n"]
         buttons: List[List[InlineKeyboardButton]] = []
         row: List[InlineKeyboardButton] = []
-        for idx, s in enumerate(steals[:6], start=1):
+        for idx, s in enumerate(steals[:4], start=1):
             veg_icon = "🟢" if s.get("is_veg") else "🔴"
             lines.append(
-                f"*{idx}. {veg_icon} {s['dish_name']}*\n"
-                f"   🏪 {s['restaurant_name']} (⭐ {s['restaurant_rating']} · {s['delivery_time']})\n"
-                f"   💰 ~₹{s['original_price_inr']}~ ➔ *Est. ₹{s['estimated_landed_inr']}* ({s['savings_tag']})"
+                f"{idx}. {veg_icon} *{s['dish_name']}* — *₹{s['estimated_landed_inr']}* ~₹{s['original_price_inr']}~ · {s['restaurant_name']} (⭐{s['restaurant_rating']})"
             )
             row.append(
                 InlineKeyboardButton(
-                    f"➕ Add #{idx} (₹{s['estimated_landed_inr']})",
+                    f"➕ #{idx} (₹{s['estimated_landed_inr']})",
                     callback_data=f"adddeal:{idx - 1}",
                 )
             )
@@ -430,22 +389,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     elif data == "menu:deals":
-        await query.edit_message_text("🔍 Scanning Swiggy for the cheapest high-rated lunches...")
+        await query.edit_message_text("🔍 Scanning cheapest high-rated lunches...")
         res = await asyncio.to_thread(find_cheapest_lunch_deals, "lunch", 280, False, 3.8)
         meals = res.get("top_cheapest_meals", [])
         LAST_DEALS_CACHE[uid] = meals
-        lines = [f"🔥 *Cheapest Full Lunches Near You*\n📍 _{STATE.active_address_label}_\n"]
+
+        if not meals:
+            await query.edit_message_text("No meals found under ₹280 right now.")
+            return
+
+        lines = [f"🔥 *Value Lunches (≤ ₹280)*\n"]
         buttons: List[List[InlineKeyboardButton]] = []
         row: List[InlineKeyboardButton] = []
-        for idx, m in enumerate(meals[:6], start=1):
+        for idx, m in enumerate(meals[:4], start=1):
             veg_icon = "🟢" if m.get("is_veg") else "🔴"
             lines.append(
-                f"*{idx}. {veg_icon} {m['dish_name']}* — *₹{m['price_inr']}*\n"
-                f"   🏪 {m['restaurant_name']} (⭐ {m['restaurant_rating']} · {m['delivery_time']})"
+                f"{idx}. {veg_icon} *{m['dish_name']}* — *₹{m['price_inr']}* · {m['restaurant_name']} (⭐{m['restaurant_rating']})"
             )
             row.append(
                 InlineKeyboardButton(
-                    f"➕ Add #{idx} (₹{m['price_inr']})",
+                    f"➕ #{idx} (₹{m['price_inr']})",
                     callback_data=f"adddeal:{idx - 1}",
                 )
             )
@@ -579,24 +542,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     elif data == "menu:dineout":
-        await query.edit_message_text("🍽️ Searching top Dineout restaurants & bill discounts near you...")
-        res = await asyncio.to_thread(search_dineout_restaurants, "restaurant", "", 6)
+        await query.edit_message_text("🍽️ Searching top Dineout offers...")
+        res = await asyncio.to_thread(search_dineout_restaurants, "restaurant", "", 4)
         rests = res.get("restaurants", [])
         if not rests:
-            await query.edit_message_text("No Dineout restaurants found. Try asking me for a specific cuisine or area!")
+            await query.edit_message_text("No Dineout restaurants found in this area.")
             return
-        lines = [
-            f"🍽️ *Top Dineout Restaurants & Offers*\n📍 _{res.get('resolved_area', STATE.active_address_label)}_\n"
-        ]
+        lines = [f"🍽️ *Dineout Deals* — {res.get('resolved_area', STATE.active_address_label)}\n"]
         buttons: List[List[InlineKeyboardButton]] = []
-        for idx, r in enumerate(rests[:5], start=1):
-            offer_str = f"\n   🏷️ *{r['active_offer']}*" if r.get("active_offer") else ""
-            lines.append(
-                f"*{idx}. {r['name']}* (⭐ {r['rating']} · {r['locality']})\n"
-                f"   🍴 {r['cuisine']} · {r['cost_for_two']}{offer_str}"
-            )
+        for idx, r in enumerate(rests[:4], start=1):
+            offer = f" ({r['active_offer']})" if r.get("active_offer") else ""
+            lines.append(f"{idx}. *{r['name']}* — ⭐{r['rating']} · {r['cost_for_two']}{offer} · {r['locality']}")
             buttons.append([
-                InlineKeyboardButton(f"📅 Slots: {r['name'][:16]}", callback_data=f"doslot:{r['restaurant_id']}"),
+                InlineKeyboardButton(f"📅 Slots: {r['name'][:14]}", callback_data=f"doslot:{r['restaurant_id']}"),
                 InlineKeyboardButton("ℹ️ Offers", callback_data=f"dodet:{r['restaurant_id']}"),
             ])
         buttons.append([InlineKeyboardButton("🔙 Main Menu", callback_data="menu:back")])
@@ -608,28 +566,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif data.startswith("doslot:"):
         rid = data.split(":")[1]
-        await query.edit_message_text("📅 Checking live table slots on Swiggy Dineout...")
+        await query.edit_message_text("📅 Checking slots...")
         slots_res = await asyncio.to_thread(check_dineout_slots, rid)
         summaries = slots_res.get("available_date_summaries", [])
-        deals = slots_res.get("booking_deals", [])
-        text_lines = [
-            f"📅 *Available Table Slots (Next 7 Days)*",
-            f"🏪 Restaurant ID: `{rid}`\n",
-        ]
+        text_lines = [f"📅 *Slots (`#{rid}`):*"]
         if summaries:
-            text_lines.append("*Slot Schedules:*")
-            for s in summaries[:4]:
+            for s in summaries[:2]:
                 text_lines.append(f"• {s}")
-        if deals:
-            text_lines.append("\n*Promotional Deals:*")
-            for d in deals[:3]:
-                text_lines.append(f"• {d}")
-        if not summaries and not deals:
-            text_lines.append("No open online slots found for this week. Walk-ins may still be available.")
+        else:
+            text_lines.append("• No open online slots this week.")
 
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("ℹ️ View Restaurant Offers", callback_data=f"dodet:{rid}")],
-            [InlineKeyboardButton("🍽️ Back to Dineout", callback_data="menu:dineout")],
+            [InlineKeyboardButton("ℹ️ Offers", callback_data=f"dodet:{rid}")],
+            [InlineKeyboardButton("🍽️ Back", callback_data="menu:dineout")],
         ])
         await query.edit_message_text(
             "\n".join(text_lines),
@@ -639,26 +588,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif data.startswith("dodet:"):
         rid = data.split(":")[1]
-        await query.edit_message_text("ℹ️ Fetching full restaurant details & bill discounts...")
+        await query.edit_message_text("ℹ️ Fetching details...")
         det = await asyncio.to_thread(get_dineout_restaurant_details, rid)
         text_lines = [
-            f"🏪 *{det.get('name', 'Restaurant Details')}*",
-            f"🍴 *Cuisines:* {det.get('cuisines', 'N/A')}",
-            f"⭐ *Rating:* {det.get('rating', 'N/A')}",
-            f"💰 *Cost for Two:* {det.get('cost_for_two', 'N/A')}",
-            f"📍 *Address:* {det.get('address', 'N/A')}",
-            f"⏰ *Timings:* {det.get('timings', 'N/A')}",
-            "",
-            f"🏷️ *Dineout Pay Offers:*",
-            f"   *{det.get('dineout_pay_offers', 'None')}*",
+            f"🏪 *{det.get('name', 'Restaurant')}* (⭐{det.get('rating', 'N/A')}, {det.get('cost_for_two', 'N/A')})",
+            f"📍 {det.get('address', 'N/A')}",
+            f"🏷️ *Offer:* {det.get('dineout_pay_offers', 'None')}",
         ]
-        if det.get("bank_offers"):
-            text_lines.extend(["", "💳 *Bank Discounts & Cashback:*", f"   {det.get('bank_offers')[:300]}"])
-
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 Check Live Slots", callback_data=f"doslot:{rid}")],
-            [InlineKeyboardButton("🍽️ Back to Dineout", callback_data="menu:dineout")],
+            [InlineKeyboardButton("📅 Slots", callback_data=f"doslot:{rid}")],
+            [InlineKeyboardButton("🍽️ Back", callback_data="menu:dineout")],
         ])
+        await query.edit_message_text(
+            "\n".join(text_lines),
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
         await query.edit_message_text(
             "\n".join(text_lines),
             parse_mode="Markdown",
