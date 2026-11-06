@@ -191,10 +191,4 @@ Core Rules:
         book_dineout_table,
         compare_order_vs_dineout,
     ],
-    sub_agents=[
-        deal_hunter_agent,
-        cart_coupon_agent,
-        checkout_gate_agent,
-        dineout_agent,
-    ],
 )

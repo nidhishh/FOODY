@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from ..config import STATE
+from ..dag_engine import parallel_fanout_with_deadline, trigger_speculative_prefetch
 from ..swiggy_client import SWIGGY
 
 ITEM_LINE_REGEX = re.compile(
@@ -226,6 +227,9 @@ def search_smart_restaurants(
             except Exception:
                 pass
 
+    # Speculatively prefetch top 3 restaurant menus & coupons in the background
+    trigger_speculative_prefetch([r["restaurant_id"] for r in top_candidates[:3]])
+
     return {
         "ok": True,
         "query": query,
@@ -260,9 +264,10 @@ def find_gourmet_steals(
         r = SWIGGY.call_tool("search_menu", {"addressId": STATE.active_address_id, "query": q})
         return _parse_search_menu_items(r)
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(_fetch_menu_query, q) for q in search_queries[:5]]
-        all_dish_lists = [f.result() for f in futures]
+    # Parallel DAG fan-out with a 2.5s deadline to drop any straggler query
+    tasks = {q: (lambda q=q: _fetch_menu_query(q)) for q in search_queries[:5]}
+    results_map = parallel_fanout_with_deadline(tasks, deadline_seconds=2.5, max_workers=5)
+    all_dish_lists = [lst for lst in results_map.values() if lst is not None]
 
     seen_ids = set()
     gourmet_candidates: List[Dict[str, Any]] = []
@@ -317,11 +322,15 @@ def find_gourmet_steals(
     # Sort by highest perceived quality delta
     gourmet_candidates.sort(key=lambda x: (x["estimated_landed_inr"], -float(x["restaurant_rating"])))
 
+    top_deals = gourmet_candidates[:12]
+    # Warm menus and coupons for top 3 candidates in background
+    trigger_speculative_prefetch([c["restaurant_id"] for c in top_deals[:3]])
+
     return {
         "ok": True,
         "active_address": STATE.active_address_label,
         "target_landed_budget": f"≤ ₹{max_landed_budget_inr}",
-        "gourmet_steals": gourmet_candidates[:12],
+        "gourmet_steals": top_deals,
     }
 
 
@@ -344,14 +353,15 @@ def find_cheapest_lunch_deals(
         r = SWIGGY.call_tool("search_menu", {"addressId": STATE.active_address_id, "query": q})
         return _parse_search_menu_items(r)
 
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = {q: pool.submit(_fetch_dish_query, q) for q in dish_queries}
-        dish_results = {q: fut.result() for q, fut in futures.items()}
+    tasks = {q: (lambda q=q: _fetch_dish_query(q)) for q in dish_queries}
+    dish_results = parallel_fanout_with_deadline(tasks, deadline_seconds=2.5, max_workers=5)
 
     seen_item_ids = set()
     candidates: List[Dict[str, Any]] = []
 
     for q, items in dish_results.items():
+        if items is None:
+            continue
         for it in items:
             mid = it["menu_item_id"]
             if not mid or mid in seen_item_ids:
@@ -385,11 +395,15 @@ def find_cheapest_lunch_deals(
             )
 
     candidates.sort(key=lambda x: (x["price_inr"], -float(x.get("restaurant_rating") or 0)))
+    top_candidates = candidates[:12]
+
+    # Warm menus and coupons for top 3 candidates in background
+    trigger_speculative_prefetch([c["restaurant_id"] for c in top_candidates[:3]])
 
     return {
         "ok": True,
         "active_address": STATE.active_address_label,
-        "top_cheapest_meals": candidates[:12],
+        "top_cheapest_meals": top_candidates,
     }
 
 

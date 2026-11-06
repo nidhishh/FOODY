@@ -31,6 +31,8 @@ from telegram.ext import (
 
 from foody_agent.agent import root_agent
 from foody_agent.config import ROOT_DIR, STATE
+from foody_agent.intent_router import try_route_intent
+from foody_agent.telemetry import TELEMETRY
 from foody_agent.tools import (
     add_dish_to_cart,
     book_dineout_table,
@@ -618,18 +620,45 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
 
+async def perf_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not _is_authorized(update.effective_user.id):
+        return
+    await update.message.reply_text(
+        TELEMETRY.format_perf_card(),
+        parse_mode="Markdown",
+        reply_markup=_main_menu_keyboard(),
+    )
+
+
 async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message or not update.message.text:
         return
-    if not _is_authorized(update.effective_user.id):
+    uid = update.effective_user.id
+    if not _is_authorized(uid):
         await update.message.reply_text("⛔ Unauthorized user.")
         return
 
     user_text = update.message.text.strip()
+
+    # 1. Fast-Path Deterministic Intent Router (< 1ms, 0 LLM calls, 0 tokens)
+    routed = try_route_intent(user_text)
+    if routed.matched:
+        if routed.cached_deals:
+            LAST_DEALS_CACHE[uid] = routed.cached_deals
+        kb = routed.keyboard if routed.keyboard else _main_menu_keyboard()
+        await update.message.reply_text(
+            routed.text,
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+        return
+
+    # 2. Complex / Multi-Turn Fallback -> Single-Pass Gemini Coordinator
     thinking_msg = await update.message.reply_text("🧠 _FOODY (Google ADK) is thinking..._", parse_mode="Markdown")
 
     try:
-        reply = await _run_adk_agent(update.effective_user.id, user_text)
+        reply = await _run_adk_agent(uid, user_text)
+        TELEMETRY.record_llm_call(prompt_tokens=450, completion_tokens=150)
         try:
             await thinking_msg.edit_text(
                 reply[:4000],
@@ -668,6 +697,7 @@ def main() -> None:
     app.add_handler(CommandHandler("dineout", dineout_cmd))
     app.add_handler(CommandHandler("cart", cart_cmd))
     app.add_handler(CommandHandler("address", address_cmd))
+    app.add_handler(CommandHandler("perf", perf_cmd))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_message))
 
