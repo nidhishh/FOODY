@@ -65,11 +65,11 @@ RE_DISH_UNDER = re.compile(
     re.IGNORECASE,
 )
 RE_CART_VIEW = re.compile(
-    r"^(?:show|view|check|see|my)?\s*(?:cart|bill|items)\b",
+    r"\b(?:(?:show|view|check|see|open|what(?:'s|\s+is)\s+in)\s+)?(?:my\s+)?(?:cart|bill|basket)\b",
     re.IGNORECASE,
 )
 RE_CART_CLEAR = re.compile(
-    r"^(?:clear|empty|flush|delete)\s*(?:my\s*)?cart\b",
+    r"\b(?:clear|empty|flush|delete)\s*(?:my\s*)?cart\b",
     re.IGNORECASE,
 )
 RE_REMOVE_FILLER = re.compile(
@@ -77,11 +77,11 @@ RE_REMOVE_FILLER = re.compile(
     re.IGNORECASE,
 )
 RE_CHECKOUT = re.compile(
-    r"^(?:checkout|stage\s+checkout|proceed\s+to\s+pay)\b",
+    r"\b(?:checkout|stage\s+checkout|proceed\s+to\s+pay)\b",
     re.IGNORECASE,
 )
 RE_CONFIRM_PAY = re.compile(
-    r"^(?:confirm|confirm\s+order|confirm\s+and\s+pay|pay|pay\s+now|pay\s+upi|yes\s+pay)\b",
+    r"\b(?:confirm(?:\s+order|\s+and\s+pay)?|pay(?:\s+now|\s+upi)?|yes\s+pay)\b",
     re.IGNORECASE,
 )
 RE_ADDRESS_VIEW = re.compile(

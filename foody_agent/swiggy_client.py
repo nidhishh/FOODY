@@ -178,7 +178,8 @@ class SwiggyMCPClient:
         start_time = time.perf_counter()
         if not is_mutation:
             # Singleflight request coalescing for read-only calls
-            parsed, is_coalesced = CACHE.singleflight.execute_sync(cache_key, _do_http_call)
+            raw_parsed, is_coalesced = CACHE.singleflight.execute_sync(cache_key, _do_http_call)
+            parsed: Dict[str, Any] = raw_parsed if isinstance(raw_parsed, dict) else {"ok": False, "error": "Invalid response"}
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
             if parsed.get("ok"):
@@ -194,7 +195,8 @@ class SwiggyMCPClient:
             return parsed
         else:
             # Mutations run directly without coalescing
-            parsed = _do_http_call()
+            raw_parsed = _do_http_call()
+            parsed = raw_parsed if isinstance(raw_parsed, dict) else {"ok": False, "error": "Invalid response"}
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             TELEMETRY.record_span(
                 name=tool_name,
@@ -261,7 +263,8 @@ class SwiggyMCPClient:
 
         start_time = time.perf_counter()
         if not is_mutation:
-            parsed, is_coalesced = await CACHE.singleflight.execute_async(cache_key, _do_async_http_call)
+            raw_parsed, is_coalesced = await CACHE.singleflight.execute_async(cache_key, _do_async_http_call)
+            parsed: Dict[str, Any] = raw_parsed if isinstance(raw_parsed, dict) else {"ok": False, "error": "Invalid response"}
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
             if parsed.get("ok"):
@@ -276,7 +279,8 @@ class SwiggyMCPClient:
             )
             return parsed
         else:
-            parsed = await _do_async_http_call()
+            raw_parsed = await _do_async_http_call()
+            parsed = raw_parsed if isinstance(raw_parsed, dict) else {"ok": False, "error": "Invalid response"}
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             TELEMETRY.record_span(
                 name=tool_name,

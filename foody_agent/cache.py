@@ -99,10 +99,13 @@ class SingleflightCoalescer:
                 first_caller = True
 
         if not first_caller:
-            flight.event.wait(timeout=25.0)
+            signaled = flight.event.wait(timeout=25.0)
+            if not signaled:
+                return {"ok": False, "error": "Coalesced request timed out"}, True
             if flight.exc is not None:
                 raise flight.exc
-            return flight.val, True
+            res_val = flight.val if flight.val is not None else {"ok": False, "error": "Empty response"}
+            return res_val, True
 
         try:
             val = fn()
@@ -131,8 +134,12 @@ class SingleflightCoalescer:
             first_caller = True
 
         if not first_caller:
-            result = await future
-            return result, True
+            try:
+                result = await asyncio.wait_for(future, timeout=25.0)
+                res_val = result if result is not None else {"ok": False, "error": "Empty response"}
+                return res_val, True
+            except asyncio.TimeoutError:
+                return {"ok": False, "error": "Coalesced async request timed out"}, True
 
         try:
             result = await coro_fn()
